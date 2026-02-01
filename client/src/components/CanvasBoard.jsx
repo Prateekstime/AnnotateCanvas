@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Stage, Layer, Rect, Transformer } from "react-konva";
+import {
+  Stage,
+  Layer,
+  Rect,
+  Transformer,
+  Text,
+  Group
+} from "react-konva";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axios";
 import { useNavigate } from "react-router-dom";
@@ -8,26 +15,25 @@ const CanvasBoard = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
-  const CANVAS_WIDTH = 800;
-  const CANVAS_HEIGHT = 600;
+  // 🔹 Updated canvas size
+  const CANVAS_WIDTH = 1100;
+  const CANVAS_HEIGHT = 650;
 
   const [annotations, setAnnotations] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [newAnnotation, setNewAnnotation] = useState([]);
-  const [mode, setMode] = useState("draw"); // draw | select
+  const [mode, setMode] = useState("draw");
 
   const stageRef = useRef(null);
   const trRef = useRef(null);
   const isDrawing = useRef(false);
+  const startPoint = useRef(null);
+  const colorInputRef = useRef(null);
 
-  // block unauthenticated users
   useEffect(() => {
-    if (!user) {
-      navigate("/login");
-    }
+    if (!user) navigate("/login");
   }, [user, navigate]);
 
-  // Load annotations
   useEffect(() => {
     const fetchAnnotations = async () => {
       try {
@@ -37,7 +43,6 @@ const CanvasBoard = () => {
         console.error("Failed to load annotations", err);
       }
     };
-
     fetchAnnotations();
   }, []);
 
@@ -46,45 +51,51 @@ const CanvasBoard = () => {
     navigate("/login");
   };
 
+  // ---------------- Drawing ----------------
+
   const handleMouseDown = (e) => {
     if (mode !== "draw") return;
 
     const clickedOnEmpty = e.target === e.target.getStage();
     if (!clickedOnEmpty) return;
 
+    const pos = e.target.getStage().getPointerPosition();
+    startPoint.current = pos;
     isDrawing.current = true;
 
-    const pos = e.target.getStage().getPointerPosition();
     const id = "rect-" + Date.now();
 
-    const newRect = {
-      id,
-      x: pos.x,
-      y: pos.y,
-      width: 0,
-      height: 0,
-      fill: "rgba(0,0,255,0.3)",
-      stroke: "blue"
-    };
-
-    setNewAnnotation([newRect]);
+    setNewAnnotation([
+      {
+        id,
+        name: `Rect ${annotations.length + 1}`,
+        x: pos.x,
+        y: pos.y,
+        width: 1,
+        height: 1,
+        fill: "rgba(99,102,241,0.25)",
+        stroke: "#6366f1"
+      }
+    ]);
   };
 
   const handleMouseMove = (e) => {
     if (!isDrawing.current || mode !== "draw") return;
 
-    const stage = e.target.getStage();
-    const point = stage.getPointerPosition();
+    const pos = e.target.getStage().getPointerPosition();
+    const start = startPoint.current;
+    if (!start) return;
 
-    const current = newAnnotation[0];
-    if (!current) return;
+    const x = Math.min(start.x, pos.x);
+    const y = Math.min(start.y, pos.y);
+    const width = Math.abs(pos.x - start.x);
+    const height = Math.abs(pos.y - start.y);
 
-    const width = point.x - current.x;
-    const height = point.y - current.y;
-
-    setNewAnnotation([
+    setNewAnnotation((prev) => [
       {
-        ...current,
+        ...prev[0],
+        x,
+        y,
         width,
         height
       }
@@ -95,40 +106,36 @@ const CanvasBoard = () => {
     if (!isDrawing.current || mode !== "draw") return;
 
     isDrawing.current = false;
+    startPoint.current = null;
 
     const rect = newAnnotation[0];
-    if (!rect) return;
-
-    if (Math.abs(rect.width) < 5 || Math.abs(rect.height) < 5) {
+    if (!rect || rect.width < 5 || rect.height < 5) {
       setNewAnnotation([]);
       return;
     }
 
-    const finalRect = {
-      ...rect,
-      x: rect.width < 0 ? rect.x + rect.width : rect.x,
-      y: rect.height < 0 ? rect.y + rect.height : rect.y,
-      width: Math.abs(rect.width),
-      height: Math.abs(rect.height)
-    };
-
-    setAnnotations((prev) => [...prev, finalRect]);
+    setAnnotations((prev) => [...prev, rect]);
     setNewAnnotation([]);
 
     try {
-      const res = await api.post("/annotations", finalRect);
+      const res = await api.post("/annotations", rect);
       const saved = res.data;
 
       setAnnotations((prev) =>
-        prev.map((r) => (r.id === finalRect.id ? saved : r))
-      );
+  prev.map((r) =>
+    r.id === rect.id
+      ? { ...r, ...saved, name: r.name }
+      : r
+  )
+);
+
     } catch (err) {
       console.error("Failed to save annotation", err);
-      setAnnotations((prev) =>
-        prev.filter((r) => r.id !== finalRect.id)
-      );
+      setAnnotations((prev) => prev.filter((r) => r.id !== rect.id));
     }
   };
+
+  // ---------------- Update ----------------
 
   const handleChange = async (newAttrs) => {
     setAnnotations((prev) =>
@@ -146,19 +153,19 @@ const CanvasBoard = () => {
     if (!selectedId || !trRef.current || !stageRef.current) return;
 
     const node = stageRef.current.findOne("#" + selectedId);
-
     if (node) {
       trRef.current.nodes([node]);
       trRef.current.getLayer().batchDraw();
     }
   }, [selectedId, annotations]);
 
+  // ---------------- Delete ----------------
+
   const handleDelete = async () => {
     if (!selectedId) return;
 
     const id = selectedId;
     setSelectedId(null);
-
     setAnnotations((prev) => prev.filter((r) => r.id !== id));
 
     try {
@@ -168,61 +175,108 @@ const CanvasBoard = () => {
     }
   };
 
+  // ---------------- Color ----------------
+
+  const handleColorChange = async (color) => {
+    if (!selectedId) return;
+
+    const updated = annotations.map((r) =>
+      r.id === selectedId
+        ? { ...r, fill: color + "55", stroke: color }
+        : r
+    );
+
+    const updatedRect = updated.find((r) => r.id === selectedId);
+
+    setAnnotations(updated);
+
+    try {
+      await api.put(`/annotations/${selectedId}`, updatedRect);
+    } catch (err) {
+      console.error("Failed to update color", err);
+    }
+  };
+
   const selectedRect = annotations.find((r) => r.id === selectedId);
 
+  // ---------------- UI ----------------
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 p-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 p-6">
 
-      <div className="mb-4 flex justify-between w-full max-w-4xl">
-        <h1 className="text-2xl font-bold">Canvas Board</h1>
+      {/* Toolbar */}
+      <div className="max-w-7xl mx-auto bg-white rounded-2xl shadow-lg p-4 mb-5 flex flex-wrap gap-3 justify-between items-center">
 
-        <div className="flex gap-2">
-          <button
-            onClick={() => setMode("draw")}
-            className={`px-4 py-2 rounded ${
-              mode === "draw" ? "bg-blue-600 text-white" : "bg-gray-200"
-            }`}
-          >
-            Draw
-          </button>
+        <div className="text-xl font-semibold text-gray-800">
+          🎨 Annotate Canvas
+        </div>
+
+        <div className="flex flex-wrap gap-2 items-center">
 
           <button
-            onClick={() => setMode("select")}
-            className={`px-4 py-2 rounded ${
-              mode === "select" ? "bg-blue-600 text-white" : "bg-gray-200"
-            }`}
+            onClick={() => {
+              setSelectedId(null);
+              setMode("draw");
+            }}
+            className={`px-4 py-2 rounded-lg font-medium transition
+              ${mode === "draw"
+                ? "bg-indigo-600 text-white shadow"
+                : "bg-gray-300 hover:bg-gray-400"}`}
           >
-            Select
+            ➕ Add Rectangle
           </button>
 
-          <button
-            onClick={handleDelete}
-            disabled={!selectedId}
-            className="bg-red-600 text-white px-4 py-2 rounded disabled:opacity-50"
-          >
-            Delete
-          </button>
+          {annotations.length > 0 && (
+            <button
+              onClick={() => setMode("select")}
+              className={`px-4 py-2 rounded-lg font-medium transition
+                ${mode === "select"
+                  ? "bg-blue-600 text-white shadow"
+                  : "bg-gray-300 hover:bg-gray-400"}`}
+            >
+              🖱 Select
+            </button>
+          )}
+
+          {selectedId && (
+            <>
+              <button
+                onClick={() => colorInputRef.current.click()}
+                className="px-3 py-2 rounded-lg bg-indigo-100 text-indigo-700 hover:bg-indigo-200 transition"
+                title="Change color"
+              >
+                🎨
+              </button>
+
+              <input
+                ref={colorInputRef}
+                type="color"
+                value={selectedRect?.stroke || "#6366f1"}
+                onChange={(e) => handleColorChange(e.target.value)}
+                className="hidden"
+              />
+
+              <button
+                onClick={handleDelete}
+                className="px-4 py-2 rounded-lg font-medium bg-red-600 text-white hover:bg-red-700 transition"
+              >
+                🗑 Delete
+              </button>
+            </>
+          )}
 
           <button
             onClick={handleLogout}
-            className="bg-gray-700 text-white px-4 py-2 rounded"
+            className="px-4 py-2 rounded-lg font-medium bg-gray-800 text-white hover:bg-black transition"
           >
             Logout
           </button>
         </div>
       </div>
 
-      {selectedRect && (
-        <div className="mb-3 text-sm text-gray-700 bg-white p-3 rounded shadow">
-          <strong>Selected Rectangle</strong>
-          <div>X : {Math.round(selectedRect.x)}</div>
-          <div>Y : {Math.round(selectedRect.y)}</div>
-          <div>Width : {Math.round(selectedRect.width)}</div>
-          <div>Height : {Math.round(selectedRect.height)}</div>
-        </div>
-      )}
+      {/* Canvas */}
+      <div className="max-w-7xl mx-auto bg-white rounded-xl shadow-lg p-4">
 
-      <div className="border border-gray-300 shadow-xl bg-white">
         <Stage
           width={CANVAS_WIDTH}
           height={CANVAS_HEIGHT}
@@ -230,8 +284,10 @@ const CanvasBoard = () => {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
+          className="border rounded"
         >
           <Layer>
+
             {annotations.map((rect) => (
               <Rectangle
                 key={rect.id}
@@ -245,54 +301,51 @@ const CanvasBoard = () => {
             ))}
 
             {newAnnotation.map((rect) => (
-              <Rect
-                key="temp-rect"
-                x={rect.x}
-                y={rect.y}
-                width={rect.width}
-                height={rect.height}
-                stroke="blue"
-                strokeWidth={2}
-                dash={[5, 5]}
-              />
+              <Group key="preview" x={rect.x} y={rect.y}>
+                <Rect
+                  width={rect.width}
+                  height={rect.height}
+                  fill={rect.fill}
+                  stroke={rect.stroke}
+                  dash={[6, 4]}
+                />
+              </Group>
             ))}
 
             {selectedId && (
               <Transformer
                 ref={trRef}
+                rotateEnabled={false}
                 boundBoxFunc={(oldBox, newBox) => {
-                  if (newBox.width < 5 || newBox.height < 5) {
-                    return oldBox;
-                  }
+                  if (newBox.width < 20 || newBox.height < 20) return oldBox;
                   return newBox;
                 }}
               />
             )}
+
           </Layer>
         </Stage>
       </div>
 
-      <div className="mt-4 text-gray-600 text-sm">
-        <p>
-          Mode: <strong>{mode}</strong> — Draw rectangles in draw mode. Select and
-          resize rectangles in select mode.
-        </p>
+      <div className="max-w-7xl mx-auto mt-4 text-sm text-gray-600">
+        Mode: <strong>{mode}</strong> — Add rectangles, select, resize and recolor them.
       </div>
     </div>
   );
 };
 
+
+
 const Rectangle = ({ shapeProps, isSelected, onSelect, onChange }) => {
-  const shapeRef = useRef();
+  const groupRef = useRef(null);
 
   return (
-    <Rect
+    <Group
       id={shapeProps.id}
-      ref={shapeRef}
-      {...shapeProps}
+      ref={groupRef}
+      x={shapeProps.x}
+      y={shapeProps.y}
       draggable
-      stroke={isSelected ? "red" : shapeProps.stroke}
-      strokeWidth={isSelected ? 2 : 1}
       onClick={onSelect}
       onTap={onSelect}
       onDragEnd={(e) => {
@@ -302,8 +355,9 @@ const Rectangle = ({ shapeProps, isSelected, onSelect, onChange }) => {
           y: e.target.y()
         });
       }}
-      onTransformEnd={() => {
-        const node = shapeRef.current;
+      onTransformEnd={(e) => {
+        const node = e.target;
+
         const scaleX = node.scaleX();
         const scaleY = node.scaleY();
 
@@ -314,11 +368,48 @@ const Rectangle = ({ shapeProps, isSelected, onSelect, onChange }) => {
           ...shapeProps,
           x: node.x(),
           y: node.y(),
-          width: Math.max(5, node.width() * scaleX),
-          height: Math.max(5, node.height() * scaleY)
+          width: Math.max(20, shapeProps.width * scaleX),
+          height: Math.max(20, shapeProps.height * scaleY)
         });
       }}
-    />
+    >
+      {/* main rectangle */}
+      <Rect
+        width={shapeProps.width}
+        height={shapeProps.height}
+        fill={shapeProps.fill}
+        stroke={
+          isSelected
+            ? "#ef4444"        // selected
+            : shapeProps.stroke // unselected still clearly visible
+        }
+        strokeWidth={isSelected ? 2.5 : 2}
+        cornerRadius={4}
+      />
+
+  
+      <Rect
+        x={2}
+        y={2}
+        width={Math.max(70, (shapeProps.name || "").length * 7 + 14)}
+        height={18}
+        fill="#fff"
+        
+        cornerRadius={3}
+        className="text-amber-300 px-3 py-4"
+      />
+
+      {/* name */}
+     <Text
+  x={6}
+  y={3}
+  text={shapeProps.name}
+  fontSize={11}
+
+/>
+
+
+    </Group>
   );
 };
 
